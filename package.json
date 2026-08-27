@@ -1,0 +1,28 @@
+{
+  "name": "mcp-hub",
+  "version": "0.1.0",
+  "description": "Gateway + registry for a fleet of MCP servers. One endpoint, many servers, RBAC, audit, rate limits. Stateless per the 2026-07-28 spec.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mcp-hub": "dist/src/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepare": "tsc -p tsconfig.json",
+    "test": "npm run build -s && node --test dist/tests/hub.test.js",
+    "start": "node dist/src/cli.js start"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "@types/node": "^22.0.0"
+  }
+}

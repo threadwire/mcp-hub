@@ -19,7 +19,7 @@ MCP broke 97M monthly SDK downloads with **no production playbook**; this is the
 ## Install & run
 
 ```bash
-npm install -g mcp-hub
+npm install -g @threadwire/mcp-hub
 
 mcp-hub init                       # ~/.mcp-hub/config.json (binds 127.0.0.1 only)
 mcp-hub add github https://mcp.github.com --tools issues.create,pr.list --scopes read,write

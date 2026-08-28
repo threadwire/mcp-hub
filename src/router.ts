@@ -10,6 +10,7 @@ import { leanView, fullView, contextSavings } from "./context.js";
 import { HubConfig, PROTOCOL_VERSION, ServerDef, TenantConfig } from "./types.js";
 import { BreakerRegistry } from "./circuit.js";
 import { Pipeline } from "./plugin.js";
+import { generateTraceparent } from "./trace.js";
 import { Discovery } from "./discovery.js";
 import { OAuthProvider } from "./oauth.js";
 
@@ -73,7 +74,7 @@ export class Router {
           return rpcError(req.id, e.code, e.message, e.data ?? null);
         }
       case "tools/call": {
-        const traceparent = h(headers, "traceparent");
+        const traceparent = h(headers, "traceparent") || generateTraceparent();
         return this.toolsCall(req, tenant.id, traceparent);
       }
       default:

@@ -183,7 +183,9 @@ function helpText(): string {
   return `
 mcp-hub — gateway + registry for a fleet of MCP servers.
 
-  init                    write default config (~/.mcp-hub/config.json)
+   version                 show hub version
+   version                 show hub version
+   init                    write default config (~/.mcp-hub/config.json)
   add <name> <url>        register a Streamable HTTP upstream
        [--tools a,b]      declare tool names (auto-discovered otherwise)
        [--scopes r,w]
@@ -223,7 +225,10 @@ async function main(argv: string[]): Promise<number> {
       return await cmdSync();
     case "stdio":
       return await cmdStdio(rest);
-    case "help":
+    case "version":
+        console.log("mcp-hub version 0.2.0");
+        return 0;
+      case "help":
     case undefined:
       console.log(helpText());
       return 0;

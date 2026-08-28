@@ -1,6 +1,6 @@
 {
   "name": "@threadwire/mcp-hub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "One endpoint for your whole MCP fleet. Streamable HTTP gateway with auto-discovery, per-tenant RBAC, OAuth PKCE, rate limits, circuit breakers, audit, and token-saving lean tool schemas. Forwards W3C traceparent across upstreams.",
   "author": "threadwire",
   "license": "MIT",

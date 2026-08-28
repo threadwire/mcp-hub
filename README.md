@@ -74,3 +74,4 @@ MIT.
 npm test    # unit + integration against an in-repo fixture upstream
 mcp-hub audit --n 50   # tail the audit
 ```
+# AM STUDENT

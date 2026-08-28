@@ -29,6 +29,10 @@ export interface HubConfig {
   port: number;
   servers: ServerDef[];
   tenants: TenantConfig[];
+  syncIntervalMs?: number; // 0 disables background discovery sync
+  adminToken?: string;
+  oauthClients?: Array<{ clientId: string; clientSecret?: string | null; scopes?: string[] }>;
+  plugins?: Array<import("./plugin.js").Plugin>;
 }
 
 export interface AuditEntry {

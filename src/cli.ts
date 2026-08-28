@@ -2,13 +2,15 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { Audit } from "./audit.js";
+import { HubStore } from "./audit.js";
+import { Discovery } from "./discovery.js";
+import { runStdioBridge } from "./stdio.js";
 import { HubServer } from "./server.js";
 import { HubConfig, ServerDef, ToolDef } from "./types.js";
 
 const HUB_DIR = process.env.MCP_HUB_DIR ?? join(homedir(), ".mcp-hub");
 const CONFIG_PATH = join(HUB_DIR, "config.json");
-const AUDIT_PATH = join(HUB_DIR, "audit.jsonl");
+const STORE_PATH = join(HUB_DIR, "store.db");
 
 const DEFAULT_TOKEN = "mcp-hub-dev-token";
 
@@ -26,6 +28,7 @@ const DEFAULT_CONFIG: HubConfig = {
       expectedIss: null,
     },
   ],
+  adminToken: DEFAULT_TOKEN,
 };
 
 function loadConfig(): HubConfig {
@@ -81,21 +84,42 @@ function cmdList(): number {
 
 async function cmdStart(): Promise<number> {
   const cfg = loadConfig();
-  const server = new HubServer(cfg, AUDIT_PATH);
+  // boot-time discovery: learn real tools from upstreams before serving.
+  // non-fatal — if a server is down, the config seed (or an empty registry)
+  // stands until the next sync.
+  const discovery = new Discovery(new HubStore(STORE_PATH), cfg);
+  const reports = await discovery.syncAll();
+  const failed = reports.filter((r) => !r.ok);
+  if (reports.length > 0) {
+    console.log(
+      `discovery: ${reports.length - failed.length}/${reports.length} upstreams synced` +
+        (failed.length > 0 ? `, ${failed.length} failed (${failed.map((f) => f.server).join(", ")})` : ""),
+    );
+  }
+  discovery.close();
+  const server = new HubServer(cfg, STORE_PATH);
   await server.listen();
+  for (const sig of ["SIGINT", "SIGTERM"] as const) {
+    process.on(sig, () => {
+      void server.close().then(() => process.exit(0));
+    });
+  }
   // hold the event loop; a traded exit() would kill the socket immediately
   await new Promise<void>(() => {});
   return 0;
 }
 
-function cmdAudit(n = 20): number {
-  if (!existsSync(AUDIT_PATH)) {
-    console.log("no audit records yet");
+function cmdAudit(argv: string[]): number {
+  const tool = flag(argv, "--tool");
+  const tenant = flag(argv, "--tenant");
+  const n = Number(flag(argv, "--n") ?? "20");
+  const store = new HubStore(STORE_PATH);
+  const entries = store.queryAudit({ tool, tenant, limit: n });
+  if (entries.length === 0) {
+    console.log("no audit records match");
     return 0;
   }
-  const lines = readFileSync(AUDIT_PATH, "utf8").trim().split("\n").filter(Boolean).slice(-n);
-  for (const line of lines) {
-    const e = JSON.parse(line);
+  for (const e of entries) {
     console.log(
       `${e.ts}  ${e.status.padEnd(12)} ${e.tenant.padEnd(8)} ${e.tool.padEnd(20)} ${String(e.latencyMs).padStart(6)}ms  in#${e.inputHash}` +
         (e.error ? `  ${e.error}` : "") +
@@ -133,6 +157,53 @@ function flag(args: string[], name: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+async function cmdSync(): Promise<number> {
+  const cfg = loadConfig();
+  const store = new HubStore(STORE_PATH);
+  const discovery = new Discovery(store, cfg);
+  const reports = await discovery.syncAll();
+  for (const r of reports) {
+    console.log(`  ${r.server}  ${r.ok ? `OK · ${r.toolsFound} tools` : `FAIL · ${r.error}`}`);
+  }
+  return 0;
+}
+
+async function cmdStdio(rest: string[]): Promise<number> {
+  const token = flag(rest, "--token");
+  if (!token) {
+    console.error("usage: mcp-hub stdio --token <t> [--url http://127.0.0.1:8801/mcp]");
+    return 1;
+  }
+  const url = flag(rest, "--url") ?? "http://127.0.0.1:8801/mcp";
+  await runStdioBridge({ url, token });
+  return 0;
+}
+
+function helpText(): string {
+  return `
+mcp-hub — gateway + registry for a fleet of MCP servers.
+
+  init                    write default config (~/.mcp-hub/config.json)
+  add <name> <url>        register a Streamable HTTP upstream
+       [--tools a,b]      declare tool names (auto-discovered otherwise)
+       [--scopes r,w]
+  list                    show registered servers
+  start                   serve the hub endpoint (127.0.0.1:8801)
+  sync                    run discovery against every upstream NOW
+  audit [--n 20]          tail the audit log (SQLite)
+        [--tool X]        filter by tool
+        [--tenant Y]      filter by tenant
+  doctor                  health-check registered upstreams
+  stdio --token <t>       bridge a stdio-only client to the hub HTTP endpoint
+       [--url http://...] hub URL (default http://127.0.0.1:8801/mcp)
+
+Talk to it like any MCP client (POST /). Try:
+  curl -s :8801 -H 'authorization: Bearer mcp-hub-dev-token' \\
+       -H 'content-type: application/json' \\
+       -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+`;
+}
+
 async function main(argv: string[]): Promise<number> {
   const [cmd, ...rest] = argv;
   switch (cmd) {
@@ -145,28 +216,16 @@ async function main(argv: string[]): Promise<number> {
     case "start":
       return cmdStart();
     case "audit":
-      return cmdAudit(Number(flag(argv, "--n") ?? 20));
+      return cmdAudit(rest);
     case "doctor":
       return cmdDoctor();
+    case "sync":
+      return await cmdSync();
+    case "stdio":
+      return await cmdStdio(rest);
     case "help":
     case undefined:
-      console.log(`
-mcp-hub — gateway + registry for a fleet of MCP servers.
-
-  init                 write default config (~/.mcp-hub/config.json)
-  add <name> <url>     register a Streamable HTTP upstream
-       [--tools a,b]   declare tool names (auto-discovered otherwise)
-       [--scopes r,w]
-  list                 show registered servers
-  start                serve the hub endpoint (127.0.0.1:8801)
-  audit [--n 20]       tail the audit log
-  doctor               health-check registered upstreams
-
-Talk to it like any MCP client (POST /). Try:
-  curl -s :8801 -H 'authorization: Bearer mcp-hub-dev-token' \\
-       -H 'content-type: application/json' \\
-       -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
-`);
+      console.log(helpText());
       return 0;
     default:
       console.error(`unknown command: ${cmd}`);

@@ -25,7 +25,7 @@ export class Registry {
 
   allTools(): { server: ServerDef; tool: ToolDef }[] {
     const out: { server: ServerDef; tool: ToolDef }[] = [];
-    for (const s of this.cfg.servers) for (const t of s.tools) out.push({ server: s, tool: t });
+    for (const s of this.cfg.servers) for (const t of s.tools ?? []) out.push({ server: s, tool: t });
     return out;
   }
 

@@ -1,8 +1,14 @@
 {
   "name": "mcp-hub",
   "version": "0.1.0",
-  "description": "Gateway + registry for a fleet of MCP servers. One endpoint, many servers, RBAC, audit, rate limits. Stateless per the 2026-07-28 spec.",
+  "description": "One endpoint for your whole MCP fleet. Streamable HTTP gateway with auto-discovery, per-tenant RBAC, OAuth PKCE, rate limits, circuit breakers, audit, and token-saving lean tool schemas. Forwards W3C traceparent across upstreams.",
+  "author": "threadwire",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/threadwire/mcp-hub.git"
+  },
+  "homepage": "https://github.com/threadwire/mcp-hub",
   "type": "module",
   "bin": {
     "mcp-hub": "dist/src/cli.js"
@@ -22,7 +28,10 @@
     "start": "node dist/src/cli.js start"
   },
   "devDependencies": {
-    "typescript": "^5.5.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "allowScripts": {
+    "better-sqlite3@11.10.0": true
   }
 }

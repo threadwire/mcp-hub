@@ -38,11 +38,11 @@ export class UpstreamProxy {
     return { tools, ttlMs };
   }
 
-  async call(name: string, args: unknown): Promise<{ result: ToolResult; requestState: string }> {
+  async call(name: string, args: unknown, extraHeaders?: Record<string, string>): Promise<{ result: ToolResult; requestState: string }> {
     const requestState = randomUUID();
     let res: RpcResponse;
     try {
-      res = await this.post("tools/call", { name, arguments: args, requestState });
+      res = await this.post("tools/call", { name, arguments: args, requestState }, extraHeaders);
     } catch (err) {
       throw new RpcError(500, `upstream transport failure: ${(err as Error).message}`);
     }
@@ -56,7 +56,7 @@ export class UpstreamProxy {
     return { result: res.result as ToolResult, requestState };
   }
 
-  private async post(method: string, params: unknown): Promise<RpcResponse> {
+  private async post(method: string, params: unknown, extraHeaders?: Record<string, string>): Promise<RpcResponse> {
     const url = this.server.url.endsWith("/") ? this.server.url : `${this.server.url}/`;
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 30_000);
@@ -68,6 +68,7 @@ export class UpstreamProxy {
           accept: "application/json, text/event-stream",
           authorization: this.server.upstreamHeaders?.authorization ?? "",
           ...(this.server.upstreamHeaders ?? {}),
+          ...(extraHeaders ?? {}),
         },
         body: JSON.stringify({ jsonrpc: "2.0", id: randomUUID(), method, params }),
         signal: ctrl.signal,

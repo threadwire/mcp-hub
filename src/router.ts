@@ -1,11 +1,17 @@
-import { Audit, sha256Short } from "./audit.js";
+import { HubStore } from "./store.js";
+import { sha256Short } from "./audit.js";
 import { authenticate } from "./auth.js";
 import { ToolCache, cacheKey } from "./cache.js";
 import { UpstreamProxy, RpcError } from "./proxy.js";
 import { RateLimiter } from "./rate.js";
 import { Registry } from "./registry.js";
 import { allowed } from "./rbac.js";
-import { HubConfig, PROTOCOL_VERSION } from "./types.js";
+import { leanView, fullView, contextSavings } from "./context.js";
+import { HubConfig, PROTOCOL_VERSION, ServerDef, TenantConfig } from "./types.js";
+import { BreakerRegistry } from "./circuit.js";
+import { Pipeline } from "./plugin.js";
+import { Discovery } from "./discovery.js";
+import { OAuthProvider } from "./oauth.js";
 
 interface RpcRequest {
   jsonrpc: "2.0";
@@ -22,22 +28,29 @@ interface RouterStats {
 }
 
 export class Router {
-  private audit: Audit;
+  private store: HubStore;
   private cache = new ToolCache();
   private rate = new RateLimiter();
+  private pipeline = new Pipeline();
+  private breakers = new BreakerRegistry();
+  private discovery: Discovery;
+  private oauth: OAuthProvider;
   private stats: RouterStats = { calls: {}, errors: 0, denied: 0, rateLimited: 0 };
-  private discoveryCache: Map<string, { payload: unknown; at: number; ttlMs: number }> = new Map();
 
   constructor(private cfg: HubConfig, auditPath: string) {
-    this.audit = new Audit(auditPath);
+    this.store = new HubStore(auditPath);
+    this.discovery = new Discovery(this.store, cfg);
+    this.oauth = new OAuthProvider(cfg);
+    for (const c of cfg.oauthClients ?? []) this.oauth.registerClient(c.clientId, c.clientSecret ?? null);
+    for (const p of cfg.plugins ?? []) this.pipeline.use(p);
   }
 
   /** Handle a JSON-RPC envelope. Returns the response object. */
   async handle(incoming: unknown, headers: Record<string, string | string[] | undefined>): Promise<unknown> {
-    const auth = authenticate(this.cfg, h(headers, "authorization"), h(headers, "x-mcp-resource"));
-    if (!auth.ok) return rpcError(undefined, 401, auth.reason ?? "unauthorized", null);
+    const auth = this.authenticateWithOauth(headers);
+    if (!auth) return rpcError(undefined, 401, "unauthorized", null);
 
-    const tenant = auth.tenant!;
+    const tenant = auth;
     const req = parseRequest(incoming);
     if (!req) return rpcError(undefined, -32700, "Parse error", null);
 
@@ -52,29 +65,58 @@ export class Router {
         return rpcResult(req.id, {});
       case "tools/list":
         return rpcResult(req.id, await this.toolsList(tenant.id));
-      case "tools/call":
-        return this.toolsCall(req, tenant.id);
+      case "tools/describe":
+        try {
+          return rpcResult(req.id, await this.toolDescribe(req.params?.name as string, tenant.id));
+        } catch (err) {
+          const e = err as RpcError;
+          return rpcError(req.id, e.code, e.message, e.data ?? null);
+        }
+      case "tools/call": {
+        const traceparent = h(headers, "traceparent");
+        return this.toolsCall(req, tenant.id, traceparent);
+      }
       default:
         return rpcError(req.id, -32601, `Method not found: ${req.method}`, null);
     }
   }
 
-  private async toolsList(tenantId: string): Promise<{ tools: unknown[] }> {
+  private async toolDescribe(name: string, tenantId: string): Promise<unknown> {
+    const tenant = this.cfg.tenants.find((t) => t.id === tenantId)!;
+    const found = this.registry().serverForTool(name);
+    if (!found) throw new RpcError(-32602, `unknown tool: ${name}`);
+    if (!allowed(tenant, name)) throw new RpcError(403, `tenant ${tenantId} is not allowed to call ${name}`);
+    const ttl = found.tool.ttlMs ?? found.server.defaultTtlMs ?? 30_000;
+    return fullView(found.tool, ttl);
+  }
+
+  private async toolsList(tenantId: string): Promise<{ tools: unknown[]; meta: Record<string, unknown> }> {
     const key = cacheKey("tenant", tenantId);
     const hit = this.cache.get(key);
-    if (hit.fresh && hit.payload !== undefined) return hit.payload as { tools: unknown[] };
+    if (hit.fresh && hit.payload !== undefined) return hit.payload as { tools: unknown[]; meta: Record<string, unknown> };
 
-    const tools = this.cfg.servers.flatMap((server) =>
-      server.tools
-        .filter((t) => allowed(this.cfg.tenants.find((x) => x.id === tenantId)!, t.name))
-        .map((t) => ({
-          name: t.name,
-          description: t.description,
-          inputSchema: t.inputSchema,
-          annotations: { cacheHint: { ttlMs: t.ttlMs ?? server.defaultTtlMs ?? 30_000 } },
-        })),
-    );
-    const payload = { tools };
+    const tenant = this.cfg.tenants.find((x) => x.id === tenantId)!;
+    const entries = this.registry()
+      .allTools()
+      .filter(({ tool }) => allowed(tenant, tool.name));
+
+    const tools = entries.map(({ server, tool }) => {
+      const ttl = tool.ttlMs ?? server.defaultTtlMs ?? 30_000;
+      return leanView(tool, ttl);
+    });
+    const leanBlob = { tools };
+    const fullBlob = {
+      tools: entries.map(({ server, tool }) => fullView(tool, tool.ttlMs ?? server.defaultTtlMs ?? 30_000)),
+    };
+    const budget = contextSavings(leanBlob, fullBlob);
+    const payload = {
+      tools,
+      meta: {
+        lean: true,
+        protocolHint: "call tools/describe <name> for the full schema before invoking",
+        tokenBudget: { ...budget, unit: "bytes" },
+      },
+    };
     this.cache.set(key, "hub", payload, 30_000, "tenant");
     return payload;
   }
@@ -82,6 +124,7 @@ export class Router {
   private async toolsCall(
     req: RpcRequest,
     tenantId: string,
+    traceparent?: string,
   ): Promise<{ jsonrpc: "2.0"; id?: number | string | null; result?: unknown; error?: unknown }> {
     const tenant = this.cfg.tenants.find((t) => t.id === tenantId)!;
     const name = (req.params?.name as string) ?? "";
@@ -93,7 +136,7 @@ export class Router {
     }
     if (!allowed(tenant, name)) {
       this.stats.denied++;
-      this.audit.record({
+      this.store.audit({
         tenant: tenantId,
         tool: name,
         server: found.server.name,
@@ -106,7 +149,7 @@ export class Router {
     const rate = this.rate.hit(tenant);
     if (!rate.ok) {
       this.stats.rateLimited++;
-      this.audit.record({
+      this.store.audit({
         tenant: tenantId,
         tool: name,
         server: found.server.name,
@@ -119,28 +162,85 @@ export class Router {
     }
 
     this.stats.calls[name] = (this.stats.calls[name] ?? 0) + 1;
+    const breaker = this.breakers.for(found.server.name);
+    if (breaker.isOpen) {
+      const retryAfterMs = breaker.retryAfterMs();
+      this.store.audit({ tenant: tenantId, tool: name, server: found.server.name, status: "ERROR", latencyMs: 0, inputHash: sha256Short(JSON.stringify(args)), error: `circuit_open retryAfterMs=${retryAfterMs}` });
+      return rpcError(req.id, 503, `upstream ${found.server.name} circuit open`, { retryAfterMs, circuit: "open" });
+    }
+    try {
+      await this.pipeline.runBefore({ tenantId, tool: name, serverName: found.server.name, argsBox: { args } });
+    } catch (pluginErr) {
+      this.stats.errors++;
+      this.store.audit({ tenant: tenantId, tool: name, server: found.server.name, status: "ERROR", latencyMs: 0, inputHash: sha256Short(JSON.stringify(args)), error: `plugin:${(pluginErr as Error).message}` });
+      return rpcError(req.id, -32603, (pluginErr as Error).message, { plugin: true });
+    }
     const t0 = Date.now();
     try {
       const proxy = new UpstreamProxy(found.server);
-      const { result, requestState } = await proxy.call(name, args);
+      const { result, requestState } = await proxy.call(name, args, traceparent ? { traceparent } : undefined);
       const latencyMs = Date.now() - t0;
-      this.audit.record({ tenant: tenantId, tool: name, server: found.server.name, status: "OK", latencyMs, inputHash: sha256Short(JSON.stringify(args)), requestState });
+      breaker.onSuccess();
+      this.store.audit({ tenant: tenantId, tool: name, server: found.server.name, status: "OK", latencyMs, inputHash: sha256Short(JSON.stringify(args)), requestState });
+      await this.pipeline.runAfter({ tenantId, tool: name, serverName: found.server.name, args, latencyMs, status: "OK" });
       return { jsonrpc: "2.0", id: req.id, result: { ...result, requestState } };
     } catch (err) {
       this.stats.errors++;
       const latencyMs = Date.now() - t0;
       const e = err as RpcError;
-      this.audit.record({ tenant: tenantId, tool: name, server: found.server.name, status: "ERROR", latencyMs, inputHash: sha256Short(JSON.stringify(args)), error: e.message, requestState: (e.data as { requestState?: string })?.requestState });
+      breaker.onFailure();
+      await this.pipeline.runError({ tenantId, tool: name, serverName: found.server.name, error: e });
+      this.store.audit({ tenant: tenantId, tool: name, server: found.server.name, status: "ERROR", latencyMs, inputHash: sha256Short(JSON.stringify(args)), error: e.message, requestState: (e.data as { requestState?: string })?.requestState });
       return rpcError(req.id, e.code, e.message, e.data ?? null);
     }
   }
 
-  private registry(): Registry {
-    return new Registry(this.cfg);
+  private authenticateWithOauth(headers: Record<string, string | string[] | undefined>): TenantConfig | null {
+    const auth = authenticate(this.cfg, h(headers, "authorization"), h(headers, "x-mcp-resource"));
+    if (auth.ok && auth.tenant) return auth.tenant;
+    // OAuth: opaque hub_ tokens minted by our /oauth/token, scoped to a tenant
+    const bearer = h(headers, "authorization")?.replace(/^Bearer\s+/i, "");
+    if (!bearer?.startsWith("hub_")) return null;
+    const issued = this.oauth.validate(bearer);
+    if (!issued) return null;
+    return this.cfg.tenants.find((t) => t.id === issued.tenantId) ?? null;
   }
 
-  refreshDiscovery(): void {
-    // placeholder for background tools/list refresh; skipped without a scheduler
+  private registry(): Registry {
+    const stored = this.store.allServers();
+    // Store wins when present (discovery has refreshed it); else config stands.
+    const effectiveServers: ServerDef[] =
+      stored.length > 0 ? stored : this.cfg.servers;
+    return new Registry({ ...this.cfg, servers: effectiveServers });
+  }
+
+  async syncAll(): Promise<import("./discovery.js").SyncReport[]> {
+    return this.discovery.syncAll();
+  }
+
+  toolsCount(): number {
+    return this.registry().allTools().length;
+  }
+
+  registryServers(): ServerDef[] {
+    const stored = this.store.allServers();
+    return stored.length > 0 ? stored : this.cfg.servers;
+  }
+
+  close(): void {
+    this.store.close();
+  }
+
+  oauthProvider(): OAuthProvider {
+    return this.oauth;
+  }
+
+  breakersSnapshot(): Record<string, { state: string; failures: number }> {
+    return this.breakers.snapshots();
+  }
+
+  auditQuery(opts: { tool?: string; tenant?: string; since?: string }): import("./types.js").AuditEntry[] {
+    return this.store.queryAudit(opts);
   }
 
   statsSnapshot(): RouterStats {

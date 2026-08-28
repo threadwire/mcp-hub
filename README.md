@@ -1,5 +1,9 @@
 # mcp-hub
 
+[![npm version](https://img.shields.io/npm/v/@threadwire/mcp-hub)](https://www.npmjs.com/package/@threadwire/mcp-hub)
+[![License: MIT](https://img.shields.io/badge/license-MIT-brightgreen)](LICENSE)
+[![runtime deps](https://img.shields.io/badge/runtime_deps-0-brightgreen)](#)
+
 Gateway + registry for a fleet of MCP servers. **One endpoint, many servers, per-tenant RBAC, audit, rate limits.** Stateless per the 2026-07-28 spec.
 
 ```
@@ -50,6 +54,10 @@ curl -s http://127.0.0.1:8801 \
 | `rate`            | sliding window per tenant; `retryAfterMs` on 429                   |
 | `audit`           | JSONL audit: who/what/input-hash/status/latency — raw args never logged |
 | `cache`           | `ttlMs` + `cacheScope` discovery cache per the 2026-07-28 spec     |
+| `discovery`       | boot-time `syncAll()` — upstream tool-list pull, non-fatal on error |
+| `store`           | SQLite config/tenants/audit via built-in `node:sqlite`              |
+| `circuit`         | per-upstream circuit breaker (open / half-open / closed)            |
+| `oauth` / `plugin` | OAuth PKCE upstream auth · schema transformer hooks                |
 
 ## Why it earns trust
 
@@ -58,6 +66,7 @@ curl -s http://127.0.0.1:8801 \
 - **Never binds 0.0.0.0** — the June 2025 mass-exposure lesson is baked into the default config.
 - **Structured errors with dedup keys** — a timed-out call can be retried with `requestState`; the gateway never lets an agent believe a tool ran when it didn't.
 - **Zero runtime deps** — pure Node, one compiled binary worth of code.
+- **Distributed traces built-in** — W3C `traceparent` is relayed verbatim through the gateway to every upstream; pair with [`mcp-telemetry`](https://github.com/threadwire/mcp-telemetry) for end-to-end spans.
 
 MIT.
 

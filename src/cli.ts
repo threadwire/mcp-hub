@@ -252,7 +252,7 @@ async function main(argv: string[]): Promise<number> {
     case "stdio":
       return await cmdStdio(rest);
     case "version":
-        console.log("mcp-hub version 0.2.0");
+        console.log("mcp-hub version 0.2.1");
         return 0;
       case "help":
     case undefined:

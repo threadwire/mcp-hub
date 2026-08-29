@@ -421,6 +421,14 @@ test("queryAudit supports tool+tenant+since filters", async () => {
   assert.equal(store.queryAudit({ status: "OK" }).length, 1);
 });
 
+test("audit pruning drops rows older than the retention window", () => {
+  const store = new HubStore(join(tmp, "prune.db"));
+  store.audit({ tenant: "a", tool: "old", server: "s", status: "OK", latencyMs: 1, inputHash: "h" }, new Date(Date.now() - 2 * 24 * 3600_000).toISOString());
+  store.audit({ tenant: "a", tool: "fresh", server: "s", status: "OK", latencyMs: 1, inputHash: "h" });
+  assert.equal(store.prune(24 * 3600_000), 1, "only the stale row goes");
+  assert.deepEqual(store.queryAudit({}).map((e) => e.tool), ["fresh"]);
+});
+
 test("discovery pulls real tools/list from upstream into the store", async () => {
   const store = new HubStore(join(tmp, `disco-${Date.now()}.db`));
   const d = new Discovery(store, cfg);

@@ -172,14 +172,14 @@ export class HubStore {
 
   /* ---- audit persistence ---- */
 
-  audit(entry: Omit<AuditEntry, "ts">): void {
+  audit(entry: Omit<AuditEntry, "ts">, ts: string = new Date().toISOString()): void {
     this.db
       .prepare(
         `INSERT INTO audit_entries (ts, tenant, tool, server, status, latency_ms, input_hash, request_state, error)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        new Date().toISOString(),
+        ts,
         entry.tenant,
         entry.tool,
         entry.server,
@@ -189,6 +189,13 @@ export class HubStore {
         entry.requestState ?? null,
         entry.error ?? null,
       );
+  }
+
+  /** Drop audit rows older than `olderThanMs`; returns the number removed. */
+  prune(olderThanMs: number): number {
+    const cutoff = new Date(Date.now() - olderThanMs).toISOString();
+    const res = this.db.prepare("DELETE FROM audit_entries WHERE ts < ?").run(cutoff);
+    return Number(res.changes ?? 0);
   }
 
   queryAudit(opts: { tool?: string; tenant?: string; since?: string; limit?: number; status?: string }): AuditEntry[] {

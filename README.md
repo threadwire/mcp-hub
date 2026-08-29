@@ -68,6 +68,27 @@ curl -s http://127.0.0.1:8801 \
 - **Zero runtime deps** — pure Node, one compiled binary worth of code.
 - **Distributed traces built-in** — W3C `traceparent` is relayed verbatim through the gateway to every upstream; pair with [`mcp-telemetry`](https://github.com/threadwire/mcp-telemetry) for end-to-end spans.
 
+## Observability
+
+Point the hub at `mcp-trace` and every call lands in one live dashboard:
+
+```json
+{ "telemetryUrl": "http://127.0.0.1:8901" }
+```
+
+```bash
+mcp-trace --serve 8901 &        # from mcp-telemetry
+mcp-hub start                   # dashboard: http://127.0.0.1:8801/admin
+```
+
+The hub posts one span per `tools/call` outcome — OK, DENIED, RATE_LIMITED,
+circuit-open, or upstream error — whose `traceId` and `parent_span_id` follow
+the inbound W3C `traceparent`, so **client → hub → upstream** chains link end
+to end in the dashboard. The bridge is fire-and-forget: a down telemetry feed
+never slows a call. Audit rows are pruned after `auditRetentionMs` (default 30
+days, `0` disables), and stale `tools/list` caches can be flushed with
+`POST /cache/invalidate` (or automatically on `POST /admin/sync`).
+
 MIT.
 
 ```bash

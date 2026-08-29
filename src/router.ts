@@ -29,6 +29,8 @@ interface RouterStats {
   rateLimited: number;
 }
 
+const DEFAULT_AUDIT_RETENTION_MS = 30 * 24 * 3600_000;
+
 export class Router {
   private store: HubStore;
   private cache = new ToolCache();
@@ -37,6 +39,7 @@ export class Router {
   private breakers = new BreakerRegistry();
   private discovery: Discovery;
   private oauth: OAuthProvider;
+  private pruneTimer?: NodeJS.Timeout;
   private stats: RouterStats = { calls: {}, errors: 0, denied: 0, rateLimited: 0 };
 
   constructor(private cfg: HubConfig, auditPath: string) {
@@ -45,6 +48,11 @@ export class Router {
     this.oauth = new OAuthProvider(cfg);
     for (const c of cfg.oauthClients ?? []) this.oauth.registerClient(c.clientId, c.clientSecret ?? null);
     for (const p of cfg.plugins ?? []) this.pipeline.use(p);
+    const retention = cfg.auditRetentionMs ?? DEFAULT_AUDIT_RETENTION_MS;
+    if (retention > 0) {
+      this.store.prune(retention); // catch up on downtime at boot
+      this.pruneTimer = setInterval(() => this.store.prune(retention), 3600_000).unref();
+    }
   }
 
   /** Handle a JSON-RPC envelope. Returns the response object. */
@@ -241,6 +249,7 @@ export class Router {
   }
 
   close(): void {
+    if (this.pruneTimer) clearInterval(this.pruneTimer);
     this.store.close();
   }
 

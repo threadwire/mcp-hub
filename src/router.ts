@@ -10,7 +10,7 @@ import { leanView, fullView, contextSavings } from "./context.js";
 import { HubConfig, PROTOCOL_VERSION, ServerDef, TenantConfig } from "./types.js";
 import { BreakerRegistry } from "./circuit.js";
 import { Pipeline } from "./plugin.js";
-import { generateTraceparent } from "./trace.js";
+import { generateTraceparent, parseTraceparent } from "./trace.js";
 import { Discovery } from "./discovery.js";
 import { OAuthProvider } from "./oauth.js";
 import { HUB_VERSION } from "./version.js";
@@ -134,6 +134,7 @@ export class Router {
     const found = this.registry().serverForTool(name);
     if (!found) {
       this.stats.errors++;
+      this.emitSpan({ tenantId, tool: name, status: "ERROR", error: `unknown tool: ${name}`, args }, traceparent);
       return rpcError(req.id, -32602, `unknown tool: ${name}`, null);
     }
     if (!allowed(tenant, name)) {
@@ -146,6 +147,7 @@ export class Router {
         latencyMs: 0,
         inputHash: sha256Short(JSON.stringify(args)),
       });
+      this.emitSpan({ tenantId, tool: name, server: found.server.name, status: "DENIED", args }, traceparent);
       return rpcError(req.id, 403, `tenant ${tenantId} is not allowed to call ${name}`, { requestState: null });
     }
     const rate = this.rate.hit(tenant);
@@ -160,6 +162,7 @@ export class Router {
         inputHash: sha256Short(JSON.stringify(args)),
         error: `retryAfterMs=${rate.retryAfterMs}`,
       });
+      this.emitSpan({ tenantId, tool: name, server: found.server.name, status: "RATE_LIMITED", args }, traceparent);
       return rpcError(req.id, 429, "rate limit exceeded", { retryAfterMs: rate.retryAfterMs });
     }
 
@@ -167,6 +170,7 @@ export class Router {
     const breaker = this.breakers.for(found.server.name);
     if (breaker.isOpen) {
       const retryAfterMs = breaker.retryAfterMs();
+      this.emitSpan({ tenantId, tool: name, server: found.server.name, status: "ERROR", error: `circuit_open retryAfterMs=${retryAfterMs}`, args }, traceparent);
       this.store.audit({ tenant: tenantId, tool: name, server: found.server.name, status: "ERROR", latencyMs: 0, inputHash: sha256Short(JSON.stringify(args)), error: `circuit_open retryAfterMs=${retryAfterMs}` });
       return rpcError(req.id, 503, `upstream ${found.server.name} circuit open`, { retryAfterMs, circuit: "open" });
     }
@@ -174,6 +178,7 @@ export class Router {
       await this.pipeline.runBefore({ tenantId, tool: name, serverName: found.server.name, argsBox: { args } });
     } catch (pluginErr) {
       this.stats.errors++;
+      this.emitSpan({ tenantId, tool: name, server: found.server.name, status: "ERROR", error: `plugin:${(pluginErr as Error).message}`, args }, traceparent);
       this.store.audit({ tenant: tenantId, tool: name, server: found.server.name, status: "ERROR", latencyMs: 0, inputHash: sha256Short(JSON.stringify(args)), error: `plugin:${(pluginErr as Error).message}` });
       return rpcError(req.id, -32603, (pluginErr as Error).message, { plugin: true });
     }
@@ -183,6 +188,7 @@ export class Router {
       const { result, requestState } = await proxy.call(name, args, traceparent ? { traceparent } : undefined);
       const latencyMs = Date.now() - t0;
       breaker.onSuccess();
+      this.emitSpan({ tenantId, tool: name, server: found.server.name, status: "OK", latencyMs, inputHash: sha256Short(JSON.stringify(args)) }, traceparent);
       this.store.audit({ tenant: tenantId, tool: name, server: found.server.name, status: "OK", latencyMs, inputHash: sha256Short(JSON.stringify(args)), requestState });
       await this.pipeline.runAfter({ tenantId, tool: name, serverName: found.server.name, args, latencyMs, status: "OK" });
       return { jsonrpc: "2.0", id: req.id, result: { ...result, requestState } };
@@ -191,6 +197,7 @@ export class Router {
       const latencyMs = Date.now() - t0;
       const e = err as RpcError;
       breaker.onFailure();
+      this.emitSpan({ tenantId, tool: name, server: found.server.name, status: "ERROR", latencyMs, error: e.message, args }, traceparent);
       await this.pipeline.runError({ tenantId, tool: name, serverName: found.server.name, error: e });
       this.store.audit({ tenant: tenantId, tool: name, server: found.server.name, status: "ERROR", latencyMs, inputHash: sha256Short(JSON.stringify(args)), error: e.message, requestState: (e.data as { requestState?: string })?.requestState });
       return rpcError(req.id, e.code, e.message, e.data ?? null);
@@ -251,6 +258,51 @@ export class Router {
 
   statsSnapshot(): RouterStats {
     return this.stats;
+  }
+
+  /** Fire-and-forget span to the mcp-trace bridge. Never blocks or throws. */
+  private emitSpan(
+    opts: {
+      tenantId: string;
+      tool: string;
+      server?: string;
+      status: string;
+      latencyMs?: number;
+      error?: string;
+      inputHash?: string;
+      args?: unknown;
+    },
+    traceparent?: string,
+  ): void {
+    const base = this.cfg.telemetryUrl;
+    if (!base) return;
+    const now = Date.now() / 1000;
+    const parsed = parseTraceparent(traceparent);
+    const traceId = parsed ? parsed.traceId : `${Date.now()}`;
+    const span = {
+      name: `${opts.tool} gen_ai.client.tool_call`,
+      kind: "gen_ai.client.tool_call",
+      tool: opts.tool,
+      server: opts.server ?? null,
+      start: now,
+      end: now,
+      status: opts.status,
+      error: opts.error ?? null,
+      input_hash:
+        opts.inputHash ?? (opts.args === undefined ? null : sha256Short(JSON.stringify(opts.args))),
+      latency_ms: opts.latencyMs ?? 0,
+      parent_span_id: parsed ? parsed.spanId : null,
+    };
+    const body = JSON.stringify({ id: traceId, started: now, spans: [span] });
+    const url = `${base.replace(/\/+$/, "")}/ingest`;
+    fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(2000),
+    }).catch(() => {
+      // bridge must never affect the request path
+    });
   }
 }
 

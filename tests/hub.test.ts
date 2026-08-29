@@ -187,6 +187,72 @@ test("tools/call forwards the W3C traceparent header to the upstream", async () 
   }
 });
 
+test("tools/call posts a chained span to the telemetry bridge when configured", async () => {
+  const r = router((c) => {
+    c.telemetryUrl = "http://127.0.0.1:9999/";
+  });
+  const orig = globalThis.fetch;
+  let spanBody: any;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).includes("/ingest")) {
+      spanBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "{}" }] } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    await call(
+      r,
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "db.query", arguments: { sql: "SELECT 1" } } },
+      { ...HEADERS, traceparent: "00-aa11bb22cc33dd44ee55ff6677889900-1122334455667788-01" },
+    );
+    // bridge is fire-and-forget; give the microtask/socket path a beat
+    await new Promise((res) => setTimeout(res, 10));
+    assert.ok(spanBody, "hub must POST a span to telemetry /ingest");
+    const s = spanBody.spans[0];
+    assert.equal(spanBody.id, "aa11bb22cc33dd44ee55ff6677889900", "span joins the inbound trace");
+    assert.equal(s.parent_span_id, "1122334455667788", "hub span hangs off the inbound upstream span");
+    assert.equal(s.tool, "db.query");
+    assert.equal(s.status, "OK");
+    assert.match(s.input_hash, /^[0-9a-f]{16}$/);
+    assert.ok(typeof s.latency_ms === "number");
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("tools/call tags DENIED calls into the telemetry bridge", async () => {
+  const r = router((c) => {
+    c.telemetryUrl = "http://127.0.0.1:9999/";
+  });
+  const orig = globalThis.fetch;
+  const got: string[] = [];
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).includes("/ingest")) {
+      got.push(JSON.parse(String(init?.body)).spans[0].status);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    await call(
+      r,
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "db.query", arguments: {} } },
+      { authorization: "Bearer restricted-token" },
+    );
+    await new Promise((res) => setTimeout(res, 10));
+    assert.deepEqual(got, ["DENIED"]);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
 test("tools/call surfaces upstream error in structured JSON-RPC error", async () => {
   const r = router();
   const out = (await call(r, {

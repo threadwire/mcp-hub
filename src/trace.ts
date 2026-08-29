@@ -27,5 +27,15 @@ export function generateTraceparent(): string {
   return `${version}-${traceId}-${spanId}-${flags}`;
 }
 
+/** Parse a W3C traceparent header into its parts ("00" version only). */
+export function parseTraceparent(
+  tp?: string,
+): { traceId: string; spanId: string; sampled: boolean } | null {
+  if (!tp) return null;
+  const m = /^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$/.exec(tp);
+  if (!m || m[1] !== "00") return null;
+  return { traceId: m[2], spanId: m[3], sampled: m[4] === "01" };
+}
+
 // Export default for convenience.
 export default generateTraceparent;

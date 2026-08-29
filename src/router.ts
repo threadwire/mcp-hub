@@ -13,6 +13,7 @@ import { Pipeline } from "./plugin.js";
 import { generateTraceparent } from "./trace.js";
 import { Discovery } from "./discovery.js";
 import { OAuthProvider } from "./oauth.js";
+import { HUB_VERSION } from "./version.js";
 
 interface RpcRequest {
   jsonrpc: "2.0";
@@ -60,7 +61,7 @@ export class Router {
         return rpcResult(req.id, {
           protocolVersion: PROTOCOL_VERSION,
           capabilities: {},
-          serverInfo: { name: "mcp-hub", version: "0.1.0" },
+          serverInfo: { name: "mcp-hub", version: HUB_VERSION },
         });
       case "ping":
         return rpcResult(req.id, {});
@@ -217,6 +218,10 @@ export class Router {
 
   async syncAll(): Promise<import("./discovery.js").SyncReport[]> {
     return this.discovery.syncAll();
+  }
+
+  invalidateCache(serverName?: string): number {
+    return this.cache.invalidate(serverName);
   }
 
   toolsCount(): number {

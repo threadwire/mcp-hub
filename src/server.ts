@@ -98,7 +98,14 @@ export class HubServer {
         return void this.json(res, 200, { started: new Date(this.started).toISOString(), ...stats });
       }
       if (req.method === "POST" && url.pathname === "/cache/invalidate") {
-        return void this.json(res, 200, { ok: true });
+        if (!this.adminOk(req)) return void this.json(res, 401, { ok: false, error: "admin token required" });
+        const serverName = url.searchParams.get("server") ?? undefined;
+        const dropped = this.router.invalidateCache(serverName);
+        return void this.json(res, 200, {
+          ok: true,
+          dropped,
+          target: serverName ?? "*",
+        });
       }
       if (req.method === "GET" && url.pathname === "/oauth/authorize") {
         const params: Record<string, string> = {};
@@ -143,7 +150,8 @@ export class HubServer {
       if (req.method === "POST" && url.pathname === "/admin/sync") {
         if (!this.adminOk(req)) return void this.json(res, 401, { ok: false, error: "admin token required" });
         const reports = await this.router.syncAll();
-        return void this.json(res, 200, { reports });
+        const cacheDropped = this.router.invalidateCache();
+        return void this.json(res, 200, { reports, cacheDropped });
       }
 
       if (req.method === "POST" && (url.pathname === "/mcp" || url.pathname === "/")) {

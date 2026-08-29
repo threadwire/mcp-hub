@@ -66,6 +66,7 @@ before(async () => {
         expectedIss: null,
       },
     ],
+    adminToken: "mcp-hub-dev-token",
   };
 });
 
@@ -90,6 +91,7 @@ test("initialize is stateless and returns the 2026-07-28 protocol version", asyn
   const out = (await call(r, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} })) as any;
   assert.equal(out.result.protocolVersion, "2026-07-28");
   assert.equal(out.result.serverInfo.name, "mcp-hub");
+  assert.match(out.result.serverInfo.version, /^\d+\.\d+\.\d+(-\w+(\.\d+)?)?$/, "serverInfo reports a real semver, never a hardcoded placeholder");
   assert.ok(!("sessionId" in out.result));
 });
 
@@ -266,6 +268,67 @@ test("tools/list is cached across calls within TTL", async () => {
   const a = (await call(r, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })) as any;
   const b = (await call(r, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })) as any;
   assert.deepEqual(a.result, b.result);
+});
+
+test("POST /cache/invalidate actually drops the tools/list cache", async () => {
+  const c = structuredClone(cfg);
+  c.port = 8912;
+  const server = new HubServer(c, join(tmp, `inv-${Math.random().toString(36).slice(2)}.db`));
+  await server.listen();
+  try {
+    await fetch(`http://127.0.0.1:8912/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer mcp-hub-dev-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    const out = (await (
+      await fetch(`http://127.0.0.1:8912/cache/invalidate`, {
+        method: "POST",
+        headers: { "x-admin-token": "mcp-hub-dev-token" },
+      })
+    ).json()) as any;
+    assert.equal(out.ok, true);
+    assert.ok(out.dropped >= 1, "invalidate must touch at least the warm tenant cache cell");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /cache/invalidate refuses without an admin token", async () => {
+  const c = structuredClone(cfg);
+  c.port = 8913;
+  const server = new HubServer(c, join(tmp, `inv-auth-${Math.random().toString(36).slice(2)}.db`));
+  await server.listen();
+  try {
+    const res = await fetch(`http://127.0.0.1:8913/cache/invalidate`, { method: "POST" });
+    assert.equal(res.status, 401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/sync flushes the tools cache after discovery", async () => {
+  const c = structuredClone(cfg);
+  c.port = 8914;
+  const server = new HubServer(c, join(tmp, `sync-inv-${Math.random().toString(36).slice(2)}.db`));
+  await server.listen();
+  try {
+    await fetch(`http://127.0.0.1:8914/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer mcp-hub-dev-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    const out = (await (
+      await fetch(`http://127.0.0.1:8914/admin/sync`, {
+        method: "POST",
+        headers: { "x-admin-token": "mcp-hub-dev-token" },
+      })
+    ).json()) as any;
+    assert.equal(out.reports[0].ok, true);
+    assert.ok(out.cacheDropped >= 1, "fresh discovery must invalidate cached tools/list");
+  } finally {
+    await server.close();
+  }
 });
 
 test("audit records OK invoke with input hash, never raw args", async () => {

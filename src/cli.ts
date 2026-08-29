@@ -82,8 +82,12 @@ function cmdList(): number {
   return 0;
 }
 
-async function cmdStart(): Promise<number> {
+async function cmdStart(args: string[]): Promise<number> {
   const cfg = loadConfig();
+  const portArg = flag(args, "--port");
+  const hostArg = flag(args, "--host");
+  if (portArg) cfg.port = Number(portArg);
+  if (hostArg) cfg.bindHost = hostArg;
   // boot-time discovery: learn real tools from upstreams before serving.
   // non-fatal — if a server is down, the config seed (or an empty registry)
   // stands until the next sync.
@@ -190,7 +194,8 @@ mcp-hub — gateway + registry for a fleet of MCP servers.
        [--tools a,b]      declare tool names (auto-discovered otherwise)
        [--scopes r,w]
   list                    show registered servers
-  start                   serve the hub endpoint (127.0.0.1:8801)
+  start [--port N]        serve the hub endpoint (default 8801, 127.0.0.1)
+         [--host H]        override bind host
   sync                    run discovery against every upstream NOW
   audit [--n 20]          tail the audit log (SQLite)
         [--tool X]        filter by tool
@@ -216,7 +221,7 @@ async function main(argv: string[]): Promise<number> {
     case "list":
       return cmdList();
     case "start":
-      return cmdStart();
+      return await cmdStart(rest);
     case "audit":
       return cmdAudit(rest);
     case "doctor":

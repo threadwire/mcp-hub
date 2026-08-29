@@ -75,7 +75,27 @@ export class HubServer {
         });
       }
       if (req.method === "GET" && url.pathname === "/metrics") {
-        return void this.json(res, 200, { started: new Date(this.started).toISOString(), ...this.router.statsSnapshot() });
+        const format = url.searchParams.get("format");
+        const stats = this.router.statsSnapshot();
+        if (format === "prometheus") {
+          const lines = [
+            "# HELP mcp_hub_calls_total Total tool calls proxied.",
+            "# TYPE mcp_hub_calls_total counter",
+            ...Object.entries(stats.calls).map(([tool, n]) => `mcp_hub_calls_total{tool="${tool}"} ${n}`),
+            "# HELP mcp_hub_errors_total Total errors.",
+            "# TYPE mcp_hub_errors_total counter",
+            `mcp_hub_errors_total ${stats.errors}`,
+            "# HELP mcp_hub_denied_total Total RBAC denials.",
+            "# TYPE mcp_hub_denied_total counter",
+            `mcp_hub_denied_total ${stats.denied}`,
+            "# HELP mcp_hub_rate_limited_total Total rate-limited calls.",
+            "# TYPE mcp_hub_rate_limited_total counter",
+            `mcp_hub_rate_limited_total ${stats.rateLimited}`,
+            "",
+          ];
+          return void this.text(res, 200, lines.join("\n"));
+        }
+        return void this.json(res, 200, { started: new Date(this.started).toISOString(), ...stats });
       }
       if (req.method === "POST" && url.pathname === "/cache/invalidate") {
         return void this.json(res, 200, { ok: true });
@@ -179,6 +199,11 @@ export class HubServer {
 
   private html(res: ServerResponse, body: string): void {
     res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    res.end(body);
+  }
+
+  private text(res: ServerResponse, status: number, body: string): void {
+    res.writeHead(status, { "content-type": "text/plain; version=0.0.4; charset=utf-8", "cache-control": "no-store" });
     res.end(body);
   }
 }

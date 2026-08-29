@@ -82,6 +82,24 @@ function cmdList(): number {
   return 0;
 }
 
+function cmdRm(args: string[]): number {
+  const cfg = loadConfig();
+  const name = args[0];
+  if (!name) {
+    console.error("usage: mcp-hub rm <name>");
+    return 1;
+  }
+  const before = cfg.servers.length;
+  cfg.servers = cfg.servers.filter((s) => s.name !== name);
+  if (cfg.servers.length === before) {
+    console.error(`no server named '${name}'`);
+    return 1;
+  }
+  saveConfig(cfg);
+  console.log(`removed ${name}`);
+  return 0;
+}
+
 async function cmdStart(args: string[]): Promise<number> {
   const cfg = loadConfig();
   const portArg = flag(args, "--port");
@@ -194,6 +212,7 @@ mcp-hub — gateway + registry for a fleet of MCP servers.
        [--tools a,b]      declare tool names (auto-discovered otherwise)
        [--scopes r,w]
   list                    show registered servers
+  rm <name>               remove a registered server
   start [--port N]        serve the hub endpoint (default 8801, 127.0.0.1)
          [--host H]        override bind host
   sync                    run discovery against every upstream NOW
@@ -220,6 +239,8 @@ async function main(argv: string[]): Promise<number> {
       return cmdAdd(rest);
     case "list":
       return cmdList();
+    case "rm":
+      return cmdRm(rest);
     case "start":
       return await cmdStart(rest);
     case "audit":

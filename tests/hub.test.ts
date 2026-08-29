@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { createHash } from "node:crypto";
 import { Router } from "../src/router.js";
+import { HubServer } from "../src/server.js";
 import { HubConfig } from "../src/types.js";
 import { HubStore } from "../src/store.js";
 import { Discovery } from "../src/discovery.js";
@@ -387,4 +388,24 @@ test("stdio bridge unwraps SSE frames to line-delimited JSON-RPC", async () => {
   const parsed = JSON.parse(line);
   assert.equal(parsed.jsonrpc, "2.0");
   assert.equal(parsed.id, 1);
+});
+
+test("http /metrics exposes Prometheus text counters after a proxied call", async () => {
+  const c = structuredClone(cfg);
+  c.port = 8911;
+  const server = new HubServer(c, join(tmp, `metrics-${Math.random().toString(36).slice(2)}.db`));
+  await server.listen();
+  try {
+    const call = await fetch(`http://127.0.0.1:8911/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer mcp-hub-dev-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "db.query", arguments: { sql: "select 1" } } }),
+    });
+    assert.equal(call.status, 200);
+    const metrics = await (await fetch(`http://127.0.0.1:8911/metrics?format=prometheus`)).text();
+    assert.match(metrics, /mcp_hub_calls_total{tool="db\.query"} 1/);
+    assert.match(metrics, /mcp_hub_errors_total 0/);
+  } finally {
+    await server.close();
+  }
 });

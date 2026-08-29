@@ -1,0 +1,24 @@
+name: Fix npm dist-tags
+
+on:
+  push:
+    tags:
+      - "tag/*"
+
+permissions:
+  contents: read
+
+jobs:
+  dist-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - run: |
+          npm dist-tag add @threadwire/mcp-hub@0.2.1 latest
+          npm dist-tag add @threadwire/mcp-hub@0.3.0-beta.1 beta
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

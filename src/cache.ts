@@ -33,12 +33,20 @@ export class ToolCache {
     });
   }
 
-  invalidate(serverName?: string): void {
+  invalidate(serverName?: string): number {
     if (!serverName) {
+      const n = this.cells.size;
       this.cells.clear();
-      return;
+      return n;
     }
-    for (const [k, v] of this.cells) if (v.serverName === serverName) this.cells.delete(k);
+    let dropped = 0;
+    for (const [k, v] of this.cells) {
+      if (v.serverName === serverName) {
+        this.cells.delete(k);
+        dropped++;
+      }
+    }
+    return dropped;
   }
 
   stats(): { size: number; keys: string[] } {

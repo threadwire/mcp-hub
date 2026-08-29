@@ -30,6 +30,7 @@ export interface HubConfig {
   servers: ServerDef[];
   tenants: TenantConfig[];
   syncIntervalMs?: number; // 0 disables background discovery sync
+  telemetryUrl?: string; // optional mcp-trace --serve base URL; hub posts a span per call to <url>/ingest
   adminToken?: string;
   oauthClients?: Array<{ clientId: string; clientSecret?: string | null; scopes?: string[] }>;
   plugins?: Array<import("./plugin.js").Plugin>;

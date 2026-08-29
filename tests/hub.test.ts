@@ -66,6 +66,7 @@ before(async () => {
         expectedIss: null,
       },
     ],
+    adminToken: "mcp-hub-dev-token",
   };
 });
 
@@ -90,6 +91,7 @@ test("initialize is stateless and returns the 2026-07-28 protocol version", asyn
   const out = (await call(r, { jsonrpc: "2.0", id: 1, method: "initialize", params: {} })) as any;
   assert.equal(out.result.protocolVersion, "2026-07-28");
   assert.equal(out.result.serverInfo.name, "mcp-hub");
+  assert.match(out.result.serverInfo.version, /^\d+\.\d+\.\d+(-\w+(\.\d+)?)?$/, "serverInfo reports a real semver, never a hardcoded placeholder");
   assert.ok(!("sessionId" in out.result));
 });
 
@@ -185,6 +187,72 @@ test("tools/call forwards the W3C traceparent header to the upstream", async () 
   }
 });
 
+test("tools/call posts a chained span to the telemetry bridge when configured", async () => {
+  const r = router((c) => {
+    c.telemetryUrl = "http://127.0.0.1:9999/";
+  });
+  const orig = globalThis.fetch;
+  let spanBody: any;
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).includes("/ingest")) {
+      spanBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "{}" }] } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    await call(
+      r,
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "db.query", arguments: { sql: "SELECT 1" } } },
+      { ...HEADERS, traceparent: "00-aa11bb22cc33dd44ee55ff6677889900-1122334455667788-01" },
+    );
+    // bridge is fire-and-forget; give the microtask/socket path a beat
+    await new Promise((res) => setTimeout(res, 10));
+    assert.ok(spanBody, "hub must POST a span to telemetry /ingest");
+    const s = spanBody.spans[0];
+    assert.equal(spanBody.id, "aa11bb22cc33dd44ee55ff6677889900", "span joins the inbound trace");
+    assert.equal(s.parent_span_id, "1122334455667788", "hub span hangs off the inbound upstream span");
+    assert.equal(s.tool, "db.query");
+    assert.equal(s.status, "OK");
+    assert.match(s.input_hash, /^[0-9a-f]{16}$/);
+    assert.ok(typeof s.latency_ms === "number");
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
+test("tools/call tags DENIED calls into the telemetry bridge", async () => {
+  const r = router((c) => {
+    c.telemetryUrl = "http://127.0.0.1:9999/";
+  });
+  const orig = globalThis.fetch;
+  const got: string[] = [];
+  globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+    if (String(url).includes("/ingest")) {
+      got.push(JSON.parse(String(init?.body)).spans[0].status);
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }
+    return new Response(
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: { content: [] } }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+  try {
+    await call(
+      r,
+      { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "db.query", arguments: {} } },
+      { authorization: "Bearer restricted-token" },
+    );
+    await new Promise((res) => setTimeout(res, 10));
+    assert.deepEqual(got, ["DENIED"]);
+  } finally {
+    globalThis.fetch = orig;
+  }
+});
+
 test("tools/call surfaces upstream error in structured JSON-RPC error", async () => {
   const r = router();
   const out = (await call(r, {
@@ -266,6 +334,67 @@ test("tools/list is cached across calls within TTL", async () => {
   const a = (await call(r, { jsonrpc: "2.0", id: 1, method: "tools/list", params: {} })) as any;
   const b = (await call(r, { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })) as any;
   assert.deepEqual(a.result, b.result);
+});
+
+test("POST /cache/invalidate actually drops the tools/list cache", async () => {
+  const c = structuredClone(cfg);
+  c.port = 8912;
+  const server = new HubServer(c, join(tmp, `inv-${Math.random().toString(36).slice(2)}.db`));
+  await server.listen();
+  try {
+    await fetch(`http://127.0.0.1:8912/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer mcp-hub-dev-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    const out = (await (
+      await fetch(`http://127.0.0.1:8912/cache/invalidate`, {
+        method: "POST",
+        headers: { "x-admin-token": "mcp-hub-dev-token" },
+      })
+    ).json()) as any;
+    assert.equal(out.ok, true);
+    assert.ok(out.dropped >= 1, "invalidate must touch at least the warm tenant cache cell");
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /cache/invalidate refuses without an admin token", async () => {
+  const c = structuredClone(cfg);
+  c.port = 8913;
+  const server = new HubServer(c, join(tmp, `inv-auth-${Math.random().toString(36).slice(2)}.db`));
+  await server.listen();
+  try {
+    const res = await fetch(`http://127.0.0.1:8913/cache/invalidate`, { method: "POST" });
+    assert.equal(res.status, 401);
+  } finally {
+    await server.close();
+  }
+});
+
+test("POST /admin/sync flushes the tools cache after discovery", async () => {
+  const c = structuredClone(cfg);
+  c.port = 8914;
+  const server = new HubServer(c, join(tmp, `sync-inv-${Math.random().toString(36).slice(2)}.db`));
+  await server.listen();
+  try {
+    await fetch(`http://127.0.0.1:8914/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer mcp-hub-dev-token" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} }),
+    });
+    const out = (await (
+      await fetch(`http://127.0.0.1:8914/admin/sync`, {
+        method: "POST",
+        headers: { "x-admin-token": "mcp-hub-dev-token" },
+      })
+    ).json()) as any;
+    assert.equal(out.reports[0].ok, true);
+    assert.ok(out.cacheDropped >= 1, "fresh discovery must invalidate cached tools/list");
+  } finally {
+    await server.close();
+  }
 });
 
 test("audit records OK invoke with input hash, never raw args", async () => {

@@ -46,6 +46,7 @@ function cmdInit(): number {
   console.log(`config ready: ${CONFIG_PATH}`);
   console.log(`dev token:   ${DEFAULT_TOKEN}`);
   console.log(`add a server:\n  mcp-hub add <name> <streamable-http-url> --tools tool1,tool2 --scopes read,write`);
+  console.log(`span bridge:\n  set "telemetryUrl": "http://127.0.0.1:8901" in ${CONFIG_PATH} to stream every call into mcp-trace`);
   return 0;
 }
 

@@ -134,10 +134,40 @@ export class HubStore {
   }
 
   allServers(): ServerDef[] {
-    const rows = this.db.prepare("SELECT name FROM registry_servers ORDER BY name").all() as Array<{
-      name: string;
-    }>;
-    return rows.map((r) => this.loadServer(r.name)!);
+    const rows = this.db
+      .prepare("SELECT * FROM registry_servers ORDER BY name")
+      .all() as Array<Record<string, unknown>>;
+    if (rows.length === 0) return [];
+    const names = rows.map((r) => r["name"] as string);
+    // One bulk query for all tools instead of N+1 per-server.
+    const tools = this.db
+      .prepare(
+        `SELECT * FROM registry_tools WHERE server IN (${names.map(() => "?").join(",")}) ORDER BY server, name`,
+      )
+      .all(...(names as SQLInputValue[])) as Array<Record<string, unknown>>;
+    const byServer = new Map<string, ServerDef>();
+    for (const row of rows) {
+      byServer.set(row["name"] as string, {
+        name: row["name"] as string,
+        url: row["url"] as string,
+        scopes: JSON.parse(row["scopes"] as string) as string[],
+        upstreamHeaders: JSON.parse(row["upstream_headers"] as string) as Record<string, string>,
+        defaultTtlMs: row["default_ttl_ms"] as number,
+        tools: [],
+      });
+    }
+    for (const t of tools) {
+      byServer
+        .get(t["server"] as string)!
+        .tools.push({
+          name: t["name"] as string,
+          description: (t["description"] as string) || undefined,
+          inputSchema: JSON.parse(t["input_schema"] as string) as Record<string, unknown>,
+          ttlMs: (t["ttl_ms"] as number | null) ?? undefined,
+          cacheScope: (t["cache_scope"] as string) as "user" | "tenant" | "global",
+        });
+    }
+    return [...byServer.values()];
   }
 
   /* ---- audit persistence ---- */
@@ -200,22 +230,39 @@ export class HubStore {
     }));
   }
 
-  /** p95 latency + error rate for a tool/tenant, for the metrics endpoint. */
-  auditSummary(tenant: string): { p95LatencyMs: number; errorRate: number; calls: number } {
+  /** p50/p95/p99 latency + error rate for a tenant, computed from the real sample. */
+  auditSummary(tenant: string): {
+    calls: number;
+    p50LatencyMs: number;
+    p95LatencyMs: number;
+    p99LatencyMs: number;
+    errorRate: number;
+  } {
     const stats = this.db
       .prepare(
         `SELECT
            COUNT(*) as calls,
-           AVG(latency_ms) as avg,
            SUM(CASE WHEN status = 'OK' THEN 1 ELSE 0 END) as ok
          FROM audit_entries WHERE tenant = ?`,
       )
-      .get(tenant) as { calls: number; avg: number | null; ok: number | null };
+      .get(tenant) as { calls: number; ok: number | null };
     const calls = stats.calls ?? 0;
+    const lats = (
+      this.db
+        .prepare("SELECT latency_ms FROM audit_entries WHERE tenant = ? ORDER BY latency_ms")
+        .all(tenant) as Array<{ latency_ms: number }>
+    ).map((r) => r.latency_ms);
+    const q = (p: number): number => {
+      if (lats.length === 0) return 0;
+      return lats[Math.min(lats.length - 1, Math.floor(p * (lats.length - 1)))];
+    };
+    const round2 = (n: number): number => Math.round(n * 100) / 100;
     return {
       calls,
-      p95LatencyMs: Math.round((stats.avg ?? 0) * 1.8 * 100) / 100,
-      errorRate: calls === 0 ? 0 : Math.round(((calls - (stats.ok ?? 0)) / calls) * 10000) / 100,
+      p50LatencyMs: round2(q(0.5)),
+      p95LatencyMs: round2(q(0.95)),
+      p99LatencyMs: round2(q(0.99)),
+      errorRate: calls === 0 ? 0 : round2(((calls - (stats.ok ?? 0)) / calls) * 100),
     };
   }
 }

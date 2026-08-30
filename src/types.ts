@@ -32,6 +32,7 @@ export interface HubConfig {
   syncIntervalMs?: number; // 0 disables background discovery sync
   auditRetentionMs?: number; // how long audit rows live; defaults to 30 days. 0 disables pruning
   telemetryUrl?: string; // optional mcp-trace --serve base URL; hub posts a span per call to <url>/ingest
+  telemetryToken?: string; // if set, sent as Authorization: Bearer on the span bridge
   adminToken?: string;
   oauthClients?: Array<{ clientId: string; clientSecret?: string | null; scopes?: string[] }>;
   plugins?: Array<import("./plugin.js").Plugin>;

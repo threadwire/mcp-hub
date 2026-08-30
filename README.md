@@ -73,13 +73,18 @@ curl -s http://127.0.0.1:8801 \
 Point the hub at `mcp-trace` and every call lands in one live dashboard:
 
 ```json
-{ "telemetryUrl": "http://127.0.0.1:8901" }
+{ "telemetryUrl": "http://127.0.0.1:8901", "telemetryToken": "trace-hub-secret" }
 ```
 
 ```bash
-mcp-trace --serve 8901 &        # from mcp-telemetry
+mcp-trace --serve 8901 --token trace-hub-secret &   # from mcp-telemetry
 mcp-hub start                   # dashboard: http://127.0.0.1:8801/admin
 ```
+
+`telemetryToken` is optional but recommended — the feed's `--serve` rejects
+`/ingest` without a matching `--token` (or `MCP_TRACE_TOKEN`), and the hub
+sends it as `Authorization: Bearer ...` on each span POST. When unset, spans
+still flow to a feed running without a token.
 
 The hub posts one span per `tools/call` outcome — OK, DENIED, RATE_LIMITED,
 circuit-open, or upstream error — whose `traceId` and `parent_span_id` follow
@@ -89,10 +94,47 @@ never slows a call. Audit rows are pruned after `auditRetentionMs` (default 30
 days, `0` disables), and stale `tools/list` caches can be flushed with
 `POST /cache/invalidate` (or automatically on `POST /admin/sync`).
 
-MIT.
+## Docker
+
+One command brings up the pair — gateway + telemetry, wired together:
+
+```bash
+docker compose up --build     # hub :8801 · dashboard :8901
+```
+
+- `mcp-hub/deploy/hub-config.json` is the config you edit (mounts read-write
+  so `mcp-hub add` still works).
+- Default `MCP_TRACE_TOKEN=trace-hub-secret` — override with an env var, and
+  keep `hub-config.json`'s `telemetryToken` in sync.
+- Both images run unprivileged; telemetry persists its feed to a volume at
+  `/data`; hub's registry/audit lives at `/data` too.
+
+## Use as a library
+
+The gateway is plain classes — embed it without the CLI:
+
+```js
+import { HubServer, Router } from "@threadwire/mcp-hub";
+
+// transport-agnostic core: attach handle() to any Node HTTP stack
+const router = new Router(cfg, "/tmp/mcp-hub.db");
+server.on("request", (req, res) => {
+  backend(await router.handle(JSON.parse(body), req.headers), res);
+});
+
+// or the whole gateway, HTTP + admin + oauth included
+await new HubServer(cfg, "/tmp/mcp-hub.db").listen(8801, "127.0.0.1");
+```
+
+Public surface: `HubServer`, `Router`, `HubStore`, `Discovery`, `Pipeline`,
+`runStdioBridge`, `HUB_VERSION`, `PROTOCOL_VERSION`, plus all config/types.
+`Router` owns zero I/O except its SQLite store and fetch calls — exact same
+code paths the CLI runs. Full runnable example: `examples/embed.mjs`.
 
 ```bash
 npm test    # unit + integration against an in-repo fixture upstream
 mcp-hub audit --n 50   # tail the audit
 ```
+
+MIT.
 # I hope everyone will help develop MCP-HUB by submitting pull requests.

@@ -1,0 +1,25 @@
+{
+  "bindHost": "0.0.0.0",
+  "port": 8801,
+  "servers": [
+    {
+      "name": "example-upstream",
+      "url": "http://host.docker.internal:9001/mcp",
+      "scopes": ["read"],
+      "tools": []
+    }
+  ],
+  "tenants": [
+    {
+      "id": "dev",
+      "tokens": ["dev-token"],
+      "allowTools": [],
+      "denyTools": [],
+      "rate": { "windowMs": 60000, "limit": 120 },
+      "expectedIss": null
+    }
+  ],
+  "adminToken": "change-me",
+  "telemetryUrl": "http://telemetry:8901",
+  "telemetryToken": "trace-hub-secret"
+}

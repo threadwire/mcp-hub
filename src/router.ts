@@ -304,9 +304,11 @@ export class Router {
     };
     const body = JSON.stringify({ id: traceId, started: now, spans: [span] });
     const url = `${base.replace(/\/+$/, "")}/ingest`;
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (this.cfg.telemetryToken) headers["authorization"] = `Bearer ${this.cfg.telemetryToken}`;
     fetch(url, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers,
       body,
       signal: AbortSignal.timeout(2000),
     }).catch(() => {

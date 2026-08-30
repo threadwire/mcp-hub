@@ -10,11 +10,19 @@
   },
   "homepage": "https://github.com/threadwire/mcp-hub",
   "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
   "bin": {
     "mcp-hub": "dist/src/cli.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "files": [
     "dist/src",
@@ -30,8 +38,5 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
-  },
-  "allowScripts": {
-    "better-sqlite3@11.10.0": true
   }
 }

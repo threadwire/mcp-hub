@@ -7,6 +7,7 @@ import { Discovery } from "./discovery.js";
 import { runStdioBridge } from "./stdio.js";
 import { HubServer } from "./server.js";
 import { HubConfig, ServerDef, ToolDef } from "./types.js";
+import { HUB_VERSION } from "./version.js";
 
 const HUB_DIR = process.env.MCP_HUB_DIR ?? join(homedir(), ".mcp-hub");
 const CONFIG_PATH = join(HUB_DIR, "config.json");
@@ -253,9 +254,9 @@ async function main(argv: string[]): Promise<number> {
     case "stdio":
       return await cmdStdio(rest);
     case "version":
-        console.log("mcp-hub version 0.2.1");
-        return 0;
-      case "help":
+      console.log(`mcp-hub version ${HUB_VERSION}`);
+      return 0;
+    case "help":
     case undefined:
       console.log(helpText());
       return 0;

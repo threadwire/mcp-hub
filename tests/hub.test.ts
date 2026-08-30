@@ -190,12 +190,15 @@ test("tools/call forwards the W3C traceparent header to the upstream", async () 
 test("tools/call posts a chained span to the telemetry bridge when configured", async () => {
   const r = router((c) => {
     c.telemetryUrl = "http://127.0.0.1:9999/";
+    c.telemetryToken = "trace-secret";
   });
   const orig = globalThis.fetch;
   let spanBody: any;
+  let spanInit: RequestInit | undefined;
   globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
     if (String(url).includes("/ingest")) {
       spanBody = JSON.parse(String(init?.body));
+      spanInit = init;
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }
     return new Response(
@@ -212,6 +215,7 @@ test("tools/call posts a chained span to the telemetry bridge when configured", 
     // bridge is fire-and-forget; give the microtask/socket path a beat
     await new Promise((res) => setTimeout(res, 10));
     assert.ok(spanBody, "hub must POST a span to telemetry /ingest");
+    assert.equal(new Headers(spanInit?.headers).get("authorization"), "Bearer trace-secret");
     const s = spanBody.spans[0];
     assert.equal(spanBody.id, "aa11bb22cc33dd44ee55ff6677889900", "span joins the inbound trace");
     assert.equal(s.parent_span_id, "1122334455667788", "hub span hangs off the inbound upstream span");

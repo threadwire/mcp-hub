@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow semver.
 
+## [Unreleased]
+
+### Added
+- **Gateway as a library** — `src/index.ts` is the public surface (`HubServer`,
+  `Router`, `HubStore`, `Discovery`, `Pipeline`, `runStdioBridge`,
+  `HUB_VERSION`, `PROTOCOL_VERSION`); `package.json` declares `main`/`types`/
+  `exports` so embedding is a named import, with `examples/embed.mjs` as a
+  runnable reference. Declarations are emitted (`declaration: true`) and the
+  runtime now requires Node `>=22.13`.
+- **Docker** — multi-stage `Dockerfile` (compile stage, then a toolchain-free
+  scratch image running as `node`), plus a root `docker-compose.yml` that
+  brings up hub + telemetry pre-wired, and `deploy/hub-config.json` as the
+  mounted config.
+- **Telemetry auth pairing** — `telemetryToken` in config; span POSTs carry
+  `Authorization: Bearer <token>` so a token-protected feed accepts them.
+
 ## [0.3.0-beta.1] - 2026-08-29
 
 First public beta: the release pipeline is real, the metrics are honest, and

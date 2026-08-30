@@ -3,7 +3,10 @@
 All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/), versions follow semver.
 
-## [Unreleased]
+## [0.3.0-beta.4] - 2026-08-30
+
+Second public beta: the gateway grows a packaging story — embed it as a
+library, run it in Docker, and wire it to a token-protected trace feed.
 
 ### Added
 - **Gateway as a library** — `src/index.ts` is the public surface (`HubServer`,
@@ -54,5 +57,6 @@ the hub bridges into `mcp-telemetry` as the front half of a full tracing story.
 - `start --port / --host` flags.
 - HTTP-level integration tests against an in-repo fixture upstream.
 
+[0.3.0-beta.4]: https://github.com/threadwire/mcp-hub/compare/v0.3.0-beta.1...v0.3.0-beta.4
 [0.3.0-beta.1]: https://github.com/threadwire/mcp-hub/compare/v0.2.1...v0.3.0-beta.1
 [0.2.1]: https://github.com/threadwire/mcp-hub/compare/v0.2.0...v0.2.1
